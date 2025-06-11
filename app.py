@@ -1,3 +1,4 @@
+```python
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -15,9 +16,12 @@ warnings.filterwarnings("ignore")
 # Set page configuration
 st.set_page_config(page_title="Data Analysis & Forecasting Tool", layout="wide", initial_sidebar_state="expanded")
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=2000)
 def load_data(file):
     try:
+        file_size = file.size / (1024 ** 2)  # Size in MB
+        if file_size > 10:
+            st.warning(f"File size: {file_size:.2f} MB. Files >10 MB may fail on Streamlit Cloud due to server limits. Consider compressing the CSV.")
         raw_data = file.read()
         result = chardet.detect(raw_data)
         encoding = result['encoding'] or 'utf-8'
@@ -41,25 +45,30 @@ def load_data(file):
 
 def is_date_column(series, sample_size=100):
     """Check if a column contains date-like values."""
-    sample = series.head(sample_size).astype(str).str.strip()
-    date_formats = ['%Y-%m', '%Y%m', '%Y/%m', '%m/%Y', '%b %Y', '%Y']
-    for fmt in date_formats:
+    try:
+        sample = series.dropna().head(sample_size).astype(str).str.strip()
+        if len(sample) == 0:
+            return False
+        date_formats = ['%Y-%m', '%Y%m', '%Y/%m', '%m/%Y', '%b %Y', '%Y']
+        for fmt in date_formats:
+            try:
+                parsed = pd.to_datetime(sample, format=fmt, errors='coerce')
+                if parsed.notna().sum() >= len(sample) * 0.9:
+                    return True
+            except:
+                continue
         try:
-            parsed = pd.to_datetime(sample, format=fmt, errors='coerce')
-            if parsed.notna().sum() >= len(sample) * 0.8:
+            parsed = pd.to_datetime(sample, errors='coerce')
+            if parsed.notna().sum() >= len(sample) * 0.9:
                 return True
         except:
-            continue
-    try:
-        parsed = pd.to_datetime(sample, errors='coerce')
-        if parsed.notna().sum() >= len(sample) * 0.8:
+            pass
+        # Check for YYYYMM pattern (e.g., 202209)
+        if sample.str.match(r'^\d{6}$').sum() >= len(sample) * 0.9:
             return True
+        return False
     except:
         return False
-    # Check for YYYYMM pattern (e.g., 202209)
-    if sample.str.match(r'^\d{6}$').sum() >= len(sample) * 0.8:
-        return True
-    return False
 
 def preprocess_time_series(df, date_col, target_col, granularity):
     try:
@@ -78,7 +87,7 @@ def preprocess_time_series(df, date_col, target_col, granularity):
         else:
             df[date_col] = pd.to_datetime(df[date_col], errors='coerce')
         
-        # Try additional formats if needed
+        # Try additional formats
         if df[date_col].isna().all():
             for fmt in ['%Y-%m', '%Y%m', '%Y/%m', '%m/%Y', '%b %Y', '%Y']:
                 try:
@@ -90,8 +99,12 @@ def preprocess_time_series(df, date_col, target_col, granularity):
                     continue
         
         if df[date_col].isna().any():
-            st.warning(f"{df[date_col].isna().sum()} invalid dates found. Filling with forward/backward fill.")
-            df[date_col] = df[date_col].fillna(method='ffill').fillna(method='bfill')
+            st.warning(f"{df[date_col].isna().sum()} invalid dates found. Dropping invalid rows.")
+            df = df.dropna(subset=[date_col])
+        
+        if df.empty:
+            st.error("No valid dates remain after preprocessing.")
+            return None
         
         df = df.sort_values(date_col)
         df = df[[date_col, target_col]].rename(columns={date_col: 'ds', target_col: 'y'})
@@ -335,12 +348,13 @@ def main():
         st.header("Mode Selection")
         mode = st.radio("Select Mode", ["Analysis", "Forecasting"])
 
-    uploaded_file = st.file_uploader("Upload CSV File", type=["csv"])
+    uploaded_file = st.file_uploader("Upload CSV File", type=["csv"], help="Files >10 MB may fail on Streamlit Cloud due to server limits.")
 
     if uploaded_file is not None:
         df = load_data(uploaded_file)
         if df is not None and not df.empty:
             st.success(f"Loaded {len(df)} rows and {len(df.columns)} columns!")
+            st.write(f"All columns: {df.columns.tolist()}")
             if mode == "Analysis":
                 analysis_mode(df)
             else:
@@ -348,3 +362,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+```
