@@ -1,4 +1,3 @@
-```python
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -16,10 +15,10 @@ warnings.filterwarnings("ignore")
 # Set page configuration
 st.set_page_config(page_title="Data Analysis & Forecasting Tool", layout="wide", initial_sidebar_state="expanded")
 
-@st.cache_data(ttl=2000)
+@st.cache_data(ttl=3600)
 def load_data(file):
     try:
-        file_size = file.size / (1024 ** 2)  # Size in MB
+        file_size = file.size / (1024 * 1024)  # Size in MB
         if file_size > 10:
             st.warning(f"File size: {file_size:.2f} MB. Files >10 MB may fail on Streamlit Cloud due to server limits. Consider compressing the CSV.")
         raw_data = file.read()
@@ -53,18 +52,18 @@ def is_date_column(series, sample_size=100):
         for fmt in date_formats:
             try:
                 parsed = pd.to_datetime(sample, format=fmt, errors='coerce')
-                if parsed.notna().sum() >= len(sample) * 0.9:
+                if parsed.notna().sum() >= len(sample) * 0.8:
                     return True
             except:
                 continue
         try:
             parsed = pd.to_datetime(sample, errors='coerce')
-            if parsed.notna().sum() >= len(sample) * 0.9:
+            if parsed.notna().sum() >= len(sample) * 0.8:
                 return True
         except:
             pass
         # Check for YYYYMM pattern (e.g., 202209)
-        if sample.str.match(r'^\d{6}$').sum() >= len(sample) * 0.9:
+        if sample.str.match(r'^\d{6}$').sum() >= len(sample) * 0.8:
             return True
         return False
     except:
@@ -362,4 +361,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-```
