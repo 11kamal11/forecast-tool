@@ -220,18 +220,7 @@ def generate_forecast(df, date_col, target_col, horizon, period):
         )
         st.plotly_chart(fig2, use_container_width=True)
 
-        # Actual vs Predicted Plot
-        st.subheader("Actual vs Predicted (Test Set)")
-        fig3 = go.Figure()
-        fig3.add_trace(go.Scatter(x=test['ds'], y=test['y'], mode='lines', name='Actual'))
-        fig3.add_trace(go.Scatter(x=test_df['ds'], y=test_df['yhat'], mode='lines', name='Predicted'))
-        fig3.update_layout(
-            title="Actual vs Predicted (Test Set)",
-            xaxis_title="Date",
-            yaxis_title=target_col,
-            template="plotly_white"
-        )
-        st.plotly_chart(fig3, use_container_width=True)
+ 
 
         # Trend Components Plot
         st.subheader("Trend Components")
