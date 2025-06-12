@@ -33,16 +33,21 @@ def load_data(file, key):
         encoding = chardet.detect(raw_data)['encoding'] or 'utf-8'
         st.write(f"Detected encoding: {encoding}")
         file.seek(0)
-        for delimiter in [',', ';', '\t', '|']:
+        delimiters = [',', ';', '\t', '|', ' ', ':']
+        for delimiter in delimiters:
             try:
                 file.seek(0)
                 df = pd.read_csv(file, delimiter=delimiter, encoding=encoding, on_bad_lines='skip', low_memory=False)
                 if len(df.columns) >= 2:
                     st.info(f"Loaded CSV with delimiter '{delimiter}'")
+                    st.write(f"First 5 rows:\n{df.head().to_string()}")
                     return df
             except Exception as e:
                 st.warning(f"Failed with delimiter '{delimiter}': {str(e)}")
-        st.error("Could not parse CSV.")
+        st.error("Could not parse CSV with common delimiters. Check file format.")
+        file.seek(0)
+        sample = file.read(1000).decode(encoding, errors='ignore')
+        st.write(f"Sample content (first 1000 bytes):\n{sample}")
         return None
     except Exception as e:
         st.error(f"Error reading CSV: {str(e)}\n{traceback.format_exc()}")
@@ -55,7 +60,9 @@ def is_date_column(series, sample_size=100):
             return False
         date_formats = [
             '%Y-%m-%d', '%Y%m%d', '%Y/%m/%d', '%d/%m/%Y', '%d-%m-%Y',
-            '%Y-%m', '%Y%m', '%m/%Y', '%b %Y', '%Y', '%d %b %Y', '%m-%d-%Y', '%Y/%m'
+            '%Y-%m', '%Y%m', '%m/%Y', '%b %Y', '%Y', '%d %b %Y', '%m-%d-%Y',
+            '%Y/%m', '%d.%m.%Y', '%m-%d-%Y', '%Y.%m.%d', '%b-%d-%Y',
+            '%Y-%b-%d', '%d/%b/%Y', '%Y/%b/%d', '%m.%d.%Y'
         ]
         if sample.str.match(r'^\d{6}$').sum() >= len(sample) * 0.8:
             return True
@@ -74,6 +81,7 @@ def is_date_column(series, sample_size=100):
                 return True
         except:
             pass
+        st.warning(f"Column '{series.name}' not recognized as date. Sample:\n{sample.head().to_string()}")
         return False
     except Exception as e:
         st.warning(f"Date detection failed: {str(e)}")
@@ -100,7 +108,12 @@ def preprocess_time_series(df, date_col, target_col, freq):
         else:
             df[date_col] = pd.to_datetime(df[date_col], errors='coerce')
 
-        for fmt in ['%Y-%m-%d', '%Y%m%d', '%Y/%m/%d', '%d/%m/%Y', '%d-%m-%Y', '%Y-%m', '%Y%m', '%m/%Y', '%b %Y', '%Y', '%d %b %Y', '%m-%d-%Y', '%Y/%m']:
+        for fmt in [
+            '%Y-%m-%d', '%Y%m%d', '%Y/%m/%d', '%d/%m/%Y', '%d-%m-%Y',
+            '%Y-%m', '%Y%m', '%m/%Y', '%b %Y', '%Y', '%d %b %Y', '%m-%d-%Y',
+            '%Y/%m', '%d.%m.%Y', '%m-%d-%Y', '%Y.%m.%d', '%b-%d-%Y',
+            '%Y-%b-%d', '%d/%b/%Y', '%Y/%b/%d', '%m.%d.%Y'
+        ]:
             if df[date_col].isna().sum() > len(df) * 0.5:
                 try:
                     df[date_col] = pd.to_datetime(df[date_col], format=fmt, errors='coerce')
@@ -152,9 +165,9 @@ def calculate_metrics(y_true, y_pred):
     mape = np.mean(np.abs((y_true - y_pred) / (y_true + 1e-10))) * 100
     return rmse, mae, mape
 
-def generate_forecast(df, date_col, target_col, horizon, period):
+def generate_forecast(df, date_col, target_col, horizon, period, five_year_forecast=False):
     try:
-        freq_map = {'Monthly': 'M', 'Quarterly': 'Q', 'Yearly': 'Y'}
+        freq_map = {'Monthly': 'M', 'Quarterly': 'Q', 'Half-Yearly': '6M', 'Yearly': 'Y'}
         freq = freq_map[period]
         processed_df = preprocess_time_series(df, date_col, target_col, freq)
         if processed_df is None:
@@ -171,6 +184,7 @@ def generate_forecast(df, date_col, target_col, horizon, period):
 
         model = Prophet(yearly_seasonality=len(processed_df) >= 12 if freq != 'Y' else False, weekly_seasonality=False, daily_seasonality=False)
         model.fit(train)
+        horizon = 60 if five_year_forecast and period == 'Monthly' else 20 if five_year_forecast and period == 'Quarterly' else 10 if five_year_forecast and period == 'Half-Yearly' else 5 if five_year_forecast and period == 'Yearly' else horizon
         future = model.make_future_dataframe(periods=horizon, freq=freq)
         forecast = model.predict(future)
         st.write(f"Forecast date range: {forecast['ds'].min()} to {forecast['ds'].max()}")
@@ -188,21 +202,43 @@ def generate_forecast(df, date_col, target_col, horizon, period):
         else:
             rmse, mae, mape = calculate_metrics(y_true, y_pred)
 
-        # Future Forecast Section
-        st.subheader(f"Future {period} Trend Forecast")
+        # Future Forecast Line Chart
+        st.subheader(f"Future {period} Trend Forecast {'(5 Years)' if five_year_forecast else ''}")
         future_forecast = forecast[forecast['ds'] > processed_df['ds'].max()]
+        if future_forecast.empty:
+            st.error("No future forecast data generated. Check data range or horizon.")
+            return
+        st.write(f"Future forecast rows: {len(future_forecast)}")
         fig1 = go.Figure()
         fig1.add_trace(go.Scatter(x=processed_df['ds'], y=processed_df['y'], mode='lines', name='Historical', line=dict(color='blue')))
         fig1.add_trace(go.Scatter(x=future_forecast['ds'], y=future_forecast['yhat'], mode='lines', name='Future Forecast', line=dict(color='red')))
         fig1.add_trace(go.Scatter(x=future_forecast['ds'], y=future_forecast['yhat_upper'], fill=None, mode='lines', line_color='rgba(255,0,0,0.2)', name='Upper CI'))
         fig1.add_trace(go.Scatter(x=future_forecast['ds'], y=future_forecast['yhat_lower'], fill='tonexty', mode='lines', line_color='rgba(255,0,0,0.2)', name='Lower CI'))
         fig1.update_layout(
-            title=f"Future {period} Trend Forecast for Next {horizon} Periods",
+            title=f"Future {period} Trend Forecast for Next {horizon} Periods {'(5 Years)' if five_year_forecast else ''}",
             xaxis_title="Date",
             yaxis_title=target_col,
             template="plotly_white"
         )
         st.plotly_chart(fig1, use_container_width=True)
+
+        # Future Forecast Bar Chart
+        st.subheader(f"Future {period} Forecast Bar Chart {'(5 Years)' if five_year_forecast else ''}")
+        bar_data = future_forecast.groupby(future_forecast['ds'].dt.to_period(freq))['yhat'].mean().reset_index()
+        if bar_data.empty:
+            st.error("No data for bar chart. Check forecast output.")
+            return
+        bar_data['ds'] = bar_data['ds'].astype(str)
+        st.write(f"Bar chart data rows: {len(bar_data)}")
+        fig_bar = go.Figure()
+        fig_bar.add_trace(go.Bar(x=bar_data['ds'], y=bar_data['yhat'], name='Forecast Mean'))
+        fig_bar.update_layout(
+            title=f"Mean Forecast per {period} Period {'(5 Years)' if five_year_forecast else ''}",
+            xaxis_title="Period",
+            yaxis_title=target_col,
+            template="plotly_white"
+        )
+        st.plotly_chart(fig_bar, use_container_width=True)
 
         # Full Forecast Plot
         st.subheader(f"Full {period} Forecast with Historical Data")
@@ -213,14 +249,12 @@ def generate_forecast(df, date_col, target_col, horizon, period):
         fig2.add_trace(go.Scatter(x=forecast['ds'], y=forecast['yhat_upper'], fill=None, mode='lines', line_color='rgba(0,100,80,0.2)', name='Upper CI'))
         fig2.add_trace(go.Scatter(x=forecast['ds'], y=forecast['yhat_lower'], fill='tonexty', mode='lines', line_color='rgba(0,100,80,0.2)', name='Lower CI'))
         fig2.update_layout(
-            title=f"Full {period} Forecast (RMSE: {rmse if rmse else 'N/A'}, MAE: {mae if mae else 'N/A'}, MAPE: {mape if mae else 'N/A'}%)",
+            title=f"Full {period} Forecast (RMSE: {rmse if rmse else 'N/A'}, MAE: {mae if mae else 'N/A'}, MAPE: {mape if mape else 'N/A'}%)",
             xaxis_title="Date",
             yaxis_title=target_col,
             template="plotly_white"
         )
         st.plotly_chart(fig2, use_container_width=True)
-
- 
 
         # Trend Components Plot
         st.subheader("Trend Components")
@@ -241,17 +275,17 @@ def generate_forecast(df, date_col, target_col, horizon, period):
         st.write(f"Future {period} Forecast (all predicted periods):")
         st.dataframe(future_forecast_df)
         st.download_button(
-            f"Download Future {period} Forecast",
+            f"Download Future {period} Forecast {'(5 Years)' if five_year_forecast else ''}",
             future_forecast_df.to_csv(index=False).encode('utf-8'),
-            file_name=f"future_{period.lower()}_forecast.csv",
+            file_name=f"future_{period.lower()}_forecast{'_5years' if five_year_forecast else ''}.csv",
             mime="text/csv"
         )
     except Exception as e:
         st.error(f"Forecasting failed: {str(e)}\n{traceback.format_exc()}")
 
-def generate_insights(df, date_col, target_col, horizon, period):
+def generate_insights(df, date_col, target_col, horizon, period, five_year_forecast=False):
     try:
-        freq_map = {'Monthly': 'M', 'Quarterly': 'Q', 'Yearly': 'Y'}
+        freq_map = {'Monthly': 'M', 'Quarterly': 'Q', 'Half-Yearly': '6M', 'Yearly': 'Y'}
         freq = freq_map[period]
         processed_df = preprocess_time_series(df, date_col, target_col, freq)
         if processed_df is None:
@@ -259,12 +293,15 @@ def generate_insights(df, date_col, target_col, horizon, period):
 
         # Generate future predictions
         model = Prophet(yearly_seasonality=len(processed_df) >= 12 if freq != 'Y' else False, weekly_seasonality=False, daily_seasonality=False)
-        model.fit(processed_df)
+        horizon = 60 if five_year_forecast and period == 'Monthly' else 20 if five_year_forecast and period == 'Quarterly' else 10 if five_year_forecast and period == 'Half-Yearly' else 5 if five_year_forecast and period == 'Yearly' else horizon
         future = model.make_future_dataframe(periods=horizon, freq=freq)
         forecast = model.predict(future)
         future_forecast = forecast[forecast['ds'] > processed_df['ds'].max()]
+        if future_forecast.empty:
+            st.error("No future forecast data for insights. Check data range or horizon.")
+            return
 
-        st.subheader(f"Future {period} Trend Insights")
+        st.subheader(f"Future {period} Trend Insights {'(5 Years)' if five_year_forecast else ''}")
 
         # Future Trend Statistics
         stats_df = pd.Series(future_forecast['yhat']).describe()
@@ -286,13 +323,13 @@ def generate_insights(df, date_col, target_col, horizon, period):
         else:
             st.write(f"**Future {period} Outliers**: None detected.")
 
-        # Future Trend Plot
+        # Future Trend Line Plot
         fig_line = go.Figure()
         fig_line.add_trace(go.Scatter(x=future_forecast['ds'], y=future_forecast['yhat'], mode='lines', name='Forecast'))
         fig_line.add_trace(go.Scatter(x=future_forecast['ds'], y=future_forecast['yhat_upper'], fill=None, mode='lines', line_color='rgba(0,100,80,0.2)', name='Upper CI'))
-        fig_line.add_trace(go.Scatter(x=future_forecast['ds'], y=future_forecast['yhat_lower'], fill='tonexty', mode='lines', line_color='rgba(0,100,80,0.2)', name='Lower CI'))
+        fig_line.add_trace(go.Scatter(x=future_forecast['ds'], y=future_forecast['yhat_lower'], fill='tonexty', mode='lines', line_color='rgba(0,0,0,0.2)', name='Lower CI'))
         fig_line.update_layout(
-            title=f"Future {period} Trend for Next {horizon} Periods",
+            title=f"Future {period} Trend for Next {horizon} Periods {'(5 Years)' if five_year_forecast else ''}",
             xaxis_title="Date",
             yaxis_title=target_col,
             template="plotly_white"
@@ -305,9 +342,9 @@ def generate_insights(df, date_col, target_col, horizon, period):
         st.write(f"**Future {period} Trend Insights** (all predicted periods)")
         st.dataframe(insights_df)
         st.download_button(
-            f"Download Future {period} Trend Insights",
+            f"Download Future {period} Trend Insights {'(5 Years)' if five_year_forecast else ''}",
             insights_df.to_csv(index=False).encode('utf-8'),
-            file_name=f"future_{period.lower()}_insights.csv",
+            file_name=f"future_{period.lower()}_insights{'_5years' if five_year_forecast else ''}.csv",
             mime="text/csv"
         )
     except Exception as e:
@@ -315,13 +352,14 @@ def generate_insights(df, date_col, target_col, horizon, period):
 
 def main():
     st.title("Future Trend Forecasting & Insights Tool")
-    st.markdown("Upload a CSV with a date column (e.g., 2022-09-01) and a numeric column to forecast future trends on a monthly, quarterly, or yearly basis.")
+    st.markdown("Upload a CSV with a date column (e.g., 2022-09-01) and a numeric column to forecast future trends on a monthly, quarterly, half-yearly, or yearly basis.")
 
     with st.sidebar:
         st.header("Settings")
-        period = st.selectbox("Forecast Period", ["Monthly", "Quarterly", "Yearly"], index=0)
-        max_horizon = 12 if period == "Monthly" else 4 if period == "Quarterly" else 2
-        horizon = st.number_input(f"Forecast Horizon ({period.lower()} periods)", min_value=1, max_value=max_horizon, value=3 if period == "Monthly" else 2)
+        period = st.selectbox("Forecast Period", ["Monthly", "Quarterly", "Half-Yearly", "Yearly"], index=0)
+        max_horizon = 12 if period == "Monthly" else 4 if period == "Quarterly" else 10 if period == "Half-Yearly" else 2
+        horizon = st.number_input(f"Forecast Horizon ({period.lower()} periods)", min_value=1, max_value=max_horizon, value=3 if period in ["Monthly", "Half-Yearly"] else 2)
+        five_year_forecast = st.checkbox("Show 5-Year Forecast", value=False)
 
     uploaded_file = st.file_uploader("Upload CSV", type=["csv"], help="Files >10 MB may fail on Streamlit Cloud.", on_change=clear_cache)
 
@@ -334,7 +372,7 @@ def main():
             with st.sidebar:
                 date_cols = [col for col in df.columns if is_date_column(df[col])]
                 if not date_cols:
-                    st.error("No date column found (e.g., '2022-09-01').")
+                    st.error("No date column found (e.g., '2022-09-01'). Check date format.")
                     return
                 date_col = st.selectbox("Date Column", date_cols, index=0)
 
@@ -350,14 +388,14 @@ def main():
                 st.header(f"Future {period} Trend Forecasting")
                 if st.button("Generate Forecast"):
                     with st.spinner("Generating forecast..."):
-                        generate_forecast(df, date_col, target_col, horizon, period)
+                        generate_forecast(df, date_col, target_col, horizon, period, five_year_forecast)
             with tab2:
                 st.header(f"Future {period} Trend Insights")
                 if st.button("Generate Insights"):
                     with st.spinner("Generating insights..."):
-                        generate_insights(df, date_col, target_col, horizon, period)
+                        generate_insights(df, date_col, target_col, horizon, period, five_year_forecast)
         else:
-            st.error("Failed to load CSV.")
+            st.error("Failed to load CSV. Check format or share sample content.")
 
 if __name__ == "__main__":
     main()
